@@ -38,6 +38,7 @@ def set_monitor_mode(iface):
 ##  - 네트워크 인터페이스 정보를 명확하게 불러오는지
 ##  - Windows 기반으로만 작동 확인했으므로 Linux에서 정상 동작하는지
 ##  -- 사용 안 하는(DOWN 상태인) 인터페이스를 표시하지 않아야 함
+## -> tests/temptest.py와 같은 테스트 파일에서 진행할 것임.
 def lookup_iface():
     iface_list = []
     for guid, iface in conf.ifaces.data.items():
@@ -48,20 +49,44 @@ def lookup_iface():
 
 if __name__ == '__main__':
     ap_list = []
-
     # Callback function that executes with each packet sniffed.
     #   [Input] a packet
     #   [Output] none
     def packet_handler(packet):
-        # Print summary information of the packet
-        # print(packet.summary())
+        # if u want to print summary information of the packet: print(packet.summary())
+        ## todo:
+        ##  - 주변 AP 및 Client MAC 주소 불러오기. 어떨게?
+        ##      1. Management Frame(Beacon Frame, Probe Request/Response 등)
         if packet.type == 0 and packet.subtype == 8:
             if packet.addr2 not in ap_list:
                 ap_list.append(packet.addr2)
-                print("AP MAC: %s with SSID: %s " % (packet.addr2, (packet.info).decode('utf-8')))
+                print("AP MAC: %s with SSID: %s " % (packet.addr2, packet.info))
 
+    # example code from https://charlesreid1.com/wiki/Scapy/AP_Scanner
+    aps = {}
+    def sniffAP(p):
+        if ((p.haslayer(Dot11Beacon) or p.haslayer(Dot11ProbeResp))
+                and not p[Dot11].addr3 in aps):
+            ssid = p[Dot11Elt].info
+            bssid = p[Dot11].addr3
+            channel = int(ord(p[Dot11Elt:3].info))
+            capability = p.sprintf("{Dot11Beacon:%Dot11Beacon.cap%}\
+                    {Dot11ProbeResp:%Dot11ProbeResp.cap%}")
 
-    # Get my network interface name list
+            # Check for encrypted networks
+            if re.search("privacy", capability):
+                enc = 'Y'
+            else:
+                enc = 'N'
+
+            # Save discovered AP
+            aps[p[Dot11].addr3] = enc
+
+            # Display discovered AP
+            print
+            "%02d  %s  %s %s" % (int(channel), enc, bssid, ssid)
+            # Get my network interface name list
+
     iface_list = lookup_iface()
     # select one, set to conf.iface
     # ...
