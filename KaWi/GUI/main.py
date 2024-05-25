@@ -58,6 +58,10 @@ class MainWindow(QMainWindow, form_Sniffer):
         self.tabs.setCurrentIndex(next_index)
 
 if __name__ == "__main__":
+    # Set the environment variable for QT GUI.
+    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] =\
+        (os.path.join(os.path.dirname(sys.executable), 'Lib', 'site-packages', 'PyQt5', 'Qt', 'plugins'))
+
     app = QApplication(sys.argv)
     myWindow = MainWindow()
     sys.exit(app.exec_())
