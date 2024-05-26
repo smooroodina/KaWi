@@ -1,13 +1,32 @@
 import os
 import sys
 import logging
+
 logging.basicConfig(filename='../log/sniff.log',
                     level=logging.DEBUG,
                     format='%(asctime)s [%(levelname)s]%(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scapy'))
-from scapy.all import *     # noqa: E402
+from scapy.all import *  # noqa: E402
+
+class Network:
+    def __init__(self, ssid:str, bssid:str, channel:int, crypto:set[str]):
+        self.ssid = ssid
+        self.bssid = bssid
+        self.channel = channel
+        self.crypto = crypto
+        self.subnet = None
+        self.gateway = None
+
+    def __str__(self):
+        return '[Network info] ssid:{}  bssid:{}  channel:{}  crypto:{}  subnet:{}  gateway:{}'.format(self.ssid, self.bssid, self.channel, self.crypto, self.subnet, self.gateway)
+
+class Host:
+    def __init__(self, bssid:str, MAC:str, IP:str):
+        self.bssid = bssid
+        self.MAC = MAC
+        self.IP = IP
 
 
 
@@ -25,45 +44,22 @@ def lookup_iface():
             iface_list.append(iface)
     return iface_list
 
+
 def kawi_sniff():
     ap_list = []
+
     # Callback function that executes with each packet sniffed.
     #   [Input] a packet
     #   [Output] none
     def packet_handler(packet):
         # if u want to print summary information of the packet: print(packet.summary())
-        ## todo:
-        ##  - 주변 AP 및 Client MAC 주소 불러오기. 어떨게?
-        ##      1. Management Frame(Beacon Frame, Probe Request/Response 등)
+        # todo:
+        #  - 주변 AP 및 Client MAC 주소 불러오기. 어떨게?
+        #      1. Management Frame(Beacon Frame, Probe Request/Response 등)
         if packet.type == 0 and packet.subtype == 8:
             if packet.addr2 not in ap_list:
                 ap_list.append(packet.addr2)
                 print("AP MAC: %s with SSID: %s " % (packet.addr2, packet.info))
-
-    # example code from https://charlesreid1.com/wiki/Scapy/AP_Scanner
-    aps = {}
-    def sniffAP(p):
-        if ((p.haslayer(Dot11Beacon) or p.haslayer(Dot11ProbeResp))
-                and not p[Dot11].addr3 in aps):
-            ssid = p[Dot11Elt].info
-            bssid = p[Dot11].addr3
-            channel = int(ord(p[Dot11Elt:3].info))
-            capability = p.sprintf("{Dot11Beacon:%Dot11Beacon.cap%}\
-                    {Dot11ProbeResp:%Dot11ProbeResp.cap%}")
-
-            # Check for encrypted networks
-            if re.search("privacy", capability):
-                enc = 'Y'
-            else:
-                enc = 'N'
-
-            # Save discovered AP
-            aps[p[Dot11].addr3] = enc
-
-            # Display discovered AP
-            print
-            "%02d  %s  %s %s" % (int(channel), enc, bssid, ssid)
-            # Get my network interface name list
 
     iface_list = lookup_iface()
     # select one, set to conf.iface
@@ -79,51 +75,50 @@ def kawi_sniff():
     conf.iface.setmonitor(False)
     sniff(prn=packet_handler, monitor=monitor)
 
+
 # Change the channel of the target network interface. (Only works in monitor mode.)
-def switch_channel(n:int, iface=conf.iface) -> bool:
+#   [Input] Channel number, Target interface
+#   [Output] Success or failure
+def switch_channel(num: int, iface=conf.iface) -> bool:
     if not iface.ismonitor():
         print("Cannot change channel. First you need to switch your iface to monitor mode.")
         return False
     else:
-        iface.setchannel(n)
-        return True # But it is still possible that it failed... Inside the scapy module.
+        iface.setchannel(num)
+        return True  # But it's still possible that it failed... (responsibility of scapy)
 
-
-
-
-
-
-def scan_ap(channels:list[int]=None, frequency:str=None, active:bool=False, iface=conf.iface):
+# Scan access points while switching channels in the 2.4GHz and 5GHz bands.
+#   [Input] Channel list for scanning, Frequency('2.4ghz' or '5ghz'), Passive/Active scan, Network interface to use
+#   [Output] List of connectable networks (ssid, bssid, channel, crypto)
+def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = False, iface=conf.iface) -> list[Network]:
     wifi_2_4_channels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     wifi_5_channels = [36, 40, 44, 48, 149, 153, 157, 161]  # in KOREA
-    ap_list = []
+    network_list = []
     current_channel = 0
+
     # Callback function that executes with each packet sniffed.
-    #   [Input] a packet
-    #   [Output] none
-    def packet_handler_scan_ap(packet):
-        # Passive Scan
+    def handle_scan_AP(packet):
         try:
-            if packet.haslayer(Dot11Beacon):    # Beacon Frame
+            # Passive Scan
+            if packet.haslayer(Dot11Beacon):  # Beacon Frame
                 netstats = packet[Dot11Beacon].network_stats()
-                if ('channel' in netstats and netstats['channel'] == current_channel    # Discard frames from other channels
-                        and packet.addr3 not in [ap['bssid'] for ap in ap_list]):
-                    ap_list.append({
-                        'ssid': netstats['ssid'],
-                        'bssid': packet.addr3,
-                        'channel': netstats['channel'],
-                        'crypto': netstats['crypto']
-                    })
-                    print(ap_list[-1])
+                if ('channel' in netstats and netstats['channel'] == current_channel  # Discard frames from other channels
+                        and packet.addr3 not in [network.bssid for network in network_list]):
+                    network_list.append(Network(
+                        netstats['ssid'],
+                        packet.addr3,
+                        netstats['channel'],
+                        netstats['crypto']
+                    ))
+                    print(network_list[-1])
             '''
             if active:  # Active Scan
                 if packet.type == 0 and (packet.subtype == 4 or packet.subtype == 5):    # Probe Request/Response Frame
                     ...
                     print('Sorry, active scanning is currently not supported.')
             '''
-        except (KeyError, TypeError) as e:   # Probably a malformed packet
+        except (KeyError, TypeError) as e:  # Probably a malformed packet
             ...
-
 
     if channels is None:
         if frequency is None:
@@ -134,19 +129,65 @@ def scan_ap(channels:list[int]=None, frequency:str=None, active:bool=False, ifac
             channels = wifi_5_channels
 
     print('Start passive scan')
-    iface_list = lookup_iface()
-    iface = next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None)
+
     iface.setmonitor(True)
     for n in channels:
         # Sequential channel switching - Stays for 1 second on each channel
         current_channel = n
         print('Current channel: %d' % n)
         switch_channel(n, iface)
-        sniff(iface=iface, monitor=True, timeout=1, prn=packet_handler_scan_ap)
+        sniff(iface=iface, monitor=True, timeout=1, prn=handle_scan_AP, store=0)
     iface.setmonitor(False)
+    return network_list
 
+
+# Scan the MAC addresses of host devices from probe requests
+def scan_host_MAC(network: Network, iface=conf.iface) -> list[dict]:
+    host_MAC_list = []
+    # Callback function that executes with each packet sniffed.
+    def handle_scan_host_MAC(packet):
+        try:
+            ...
+        except (KeyError, TypeError) as e:  # Probably a malformed packet
+            ...
+    return host_MAC_list
+
+# Scan client devices connected to a specific network.
+#   [Input] Target network, Network interface to use
+#   [Output] Information list of client devices ( )
+def scan_host(network: Network, iface=conf.iface) -> list[Host]:
+    # Callback function that executes with each packet sniffed.
+    def handle_scan_host(packet):
+        try:
+            # Passive Scan
+            if packet.haslayer(Dot11):  # Beacon Frame
+                netstats = packet[Dot11Beacon].network_stats()
+                if ('channel' in netstats and netstats[
+                    'channel'] == current_channel  # Discard frames from other channels
+                        and packet.addr3 not in [ap['bssid'] for ap in network_list]):
+                    network_list.append(Network(
+                        netstats['ssid'],
+                        packet.addr3,
+                        netstats['channel'],
+                        netstats['crypto']
+                    ))
+                    print(network_list[-1])
+            '''
+            if active:  # Active Scan
+                if packet.type == 0 and (packet.subtype == 4 or packet.subtype == 5):    # Probe Request/Response Frame
+                    ...
+                    print('Sorry, active scanning is currently not supported.')
+            '''
+        except (KeyError, TypeError) as e:  # Probably a malformed packet
+            ...
+    client_mac_list = scan_host_MAC()
+    switch_channel(network.channel, iface)
+    iface.setmonitor(True)
+    sniff(iface=iface, monitor=True, timeout=10, prn=handle_scan_host, store=0)
+    iface.setmonitor(False)
 
 
 if __name__ == '__main__':
     print(sys.argv)
-    scan_ap()
+    iface_list = lookup_iface()
+    scan_AP(frequency='2.4ghz', iface=next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None))
