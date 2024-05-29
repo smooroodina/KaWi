@@ -4,7 +4,8 @@ import threading
 import subprocess
 import logging
 
-logging.basicConfig(filename='../log/sniff.log',
+
+logging.basicConfig(filename=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'log', 'sniff.log'),
                     level=logging.DEBUG,
                     format='%(asctime)s [%(levelname)s]%(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
@@ -274,8 +275,6 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
 
         print('{} - {}'.format(received.hwsrc, received.psrc))
     return host_list
-
-    return None
 
 
 if __name__ == '__main__':
