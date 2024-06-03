@@ -1,73 +1,89 @@
 # 기능별로 모듈을 구분해 개발하기 전에 이 파일에서 작성하여 잘 작동하는지 실행시켜 봅니다.
 import os
 import sys
-from PyQt5 import QtCore, QtGui, QtWidgets
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '\\scapy')
 from scapy.all import *     # noqa: E402
+from scapy.automaton import *
 
 
-class SnifferThread(QtCore.QThread):
-    HandleSignal = QtCore.pyqtSignal(scapy.layers.l2.Ether)
 
-    def __init__(self, filter, iface):
-        super().__init__()
-        self.filter = filter
-        self.iface = iface
+class AccessPointAutomaton(Automaton):
 
-    def run(self):
-        sniff(filter=self.filter, iface=self.iface, prn=lambda x: self.HandleSignal.emit(x))
+    def parse_args(self, interface='Wi-Fi 2', ssid='MyAP', **kwargs):
+        self.interface = interface
+        self.ssid = ssid
+        Automaton.parse_args(self, **kwargs)
 
-    # def pack_callback(self,packet):
-    #     packet.show()
+    @ATMT.state(initial=1)
+    def START(self):
+        print("Starting AP Automaton...")
+        raise self.SENDING_BEACON()
+
+    @ATMT.state()
+    def SENDING_BEACON(self):
+        print("Sending beacon frames...")
+        self.send_beacon()
+        raise self.WAITING()
+
+    @ATMT.state()
+    def WAITING(self):
+        print("Waiting for packets...")
+
+    @ATMT.receive_condition(WAITING)
+    def packet_received(self, pkt):
+        if pkt.haslayer(Dot11):
+            if pkt.type == 0 and pkt.subtype == 4:  # Probe Request
+                print(f"Probe request received from {pkt.addr2}")
+                self.send_probe_response(pkt)
+            elif pkt.type == 0 and pkt.subtype == 11:  # Authentication
+                print(f"Authentication request received from {pkt.addr2}")
+                self.send_auth_response(pkt)
+            elif pkt.type == 0 and pkt.subtype == 0:  # Association Request
+                print(f"Association request received from {pkt.addr2}")
+                self.send_assoc_response(pkt)
+            raise self.WAITING()
+
+    def send_beacon(self):
+        dot11 = Dot11(type=0, subtype=8, addr1='ff:ff:ff:ff:ff:ff', addr2='02:00:00:00:01:00',
+                      addr3='02:00:00:00:01:00')
+        beacon = Dot11Beacon(cap='ESS+privacy')
+        essid = Dot11Elt(ID='SSID', info=self.ssid, len=len(self.ssid))
+        frame = RadioTap() / dot11 / beacon / essid
+        sendp(frame, iface=self.interface, inter=0.1, loop=1, verbose=False)
+
+    def send_probe_response(self, pkt):
+        dot11 = Dot11(type=0, subtype=5, addr1=pkt.addr2, addr2='02:00:00:00:01:00', addr3='02:00:00:00:01:00')
+        probe_resp = Dot11ProbeResp(cap='ESS+privacy')
+        essid = Dot11Elt(ID='SSID', info=self.ssid, len=len(self.ssid))
+        frame = RadioTap() / dot11 / probe_resp / essid
+        sendp(frame, iface=self.interface, verbose=False)
+
+    def send_auth_response(self, pkt):
+        dot11 = Dot11(type=0, subtype=11, addr1=pkt.addr2, addr2='02:00:00:00:01:00', addr3='02:00:00:00:01:00')
+        auth = Dot11Auth(seqnum=2)
+        frame = RadioTap() / dot11 / auth
+        sendp(frame, iface=self.interface, verbose=False)
+
+    def send_assoc_response(self, pkt):
+        dot11 = Dot11(type=0, subtype=1, addr1=pkt.addr2, addr2='02:00:00:00:01:00', addr3='02:00:00:00:01:00')
+        assoc_resp = Dot11AssoResp()
+        frame = RadioTap() / dot11 / assoc_resp
+        sendp(frame, iface=self.interface, verbose=False)
+
+    @ATMT.state(final=1)
+    def END(self):
+        print("Stopping AP Automaton...")
+
+    @ATMT.timeout(WAITING, 1)
+    def timeout(self):
+        raise self.SENDING_BEACON()
+
+    @ATMT.action(timeout)
+    def start_sniffing(self):
+        self.sniff(iface=self.interface, prn=self.master.recv, store=False)
 
 
-def set_monitor_mode(iface):
-    # todo: 환경변수에 Npcap 경로 설정
-    try:
-        subprocess.check_call(['WlanHelper.exe', iface, 'mode', 'monitor'])
-        print(f"Interface {iface} set to monitor mode.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to set {iface} to monitor mode: {e}")
-
-
-# Recognizes and returns a list of network interface.
-#   [Input] none
-#   [Output] List of available network interface [Name, Description, MAC, IPv4]
-## Test Requirements:
-##  - 네트워크 인터페이스 정보를 명확하게 불러오는지
-##  - Windows 기반으로만 작동 확인했으므로 Linux에서 정상 동작하는지
-##  -- 사용 안 하는(DOWN 상태인) 인터페이스를 표시하지 않아야 함
-def lookup_iface():
-    iface_list = []
-    for guid, iface in conf.ifaces.data.items():
-        if iface.mac != '':  # Windows에서 WAN Miniport 제외
-            iface_list.append(iface)
-    return iface_list
-
-
-if __name__ == '__main__':
-    ap_list = []
-
-    # Callback function that executes with each packet sniffed.
-    #   [Input] a packet
-    #   [Output] none
-    def packet_handler(packet):
-        # Print summary information of the packet
-        # print(packet.summary())
-        if packet.type == 0 and packet.subtype == 8:
-            if packet.addr2 not in ap_list:
-                ap_list.append(packet.addr2)
-                print("AP MAC: %s with SSID: %s " % (packet.addr2, (packet.info).decode('utf-8')))
-
-
-    # Get my network interface name list
-    iface_list = lookup_iface()
-    # select one, set to conf.iface
-    # ...
-    conf.iface = next((i for i in iface_list if i.description == '802.11n USB Wireless LAN Card'), None)
-    # can choose whether to sniff in monitor mode or not.
-    monitor = True
-    # params for sniff(): scapy/scapy/sendrecv.py - class AsyncSniffer - def _run(...) 참고.
-    # iface 명시하지 않으면 자동으로 conf.iface의 인터페이스가 선택됨
-    sniff(prn=packet_handler, monitor=monitor)
+if __name__ == "__main__":
+    automaton = AccessPointAutomaton()
+    automaton.run()

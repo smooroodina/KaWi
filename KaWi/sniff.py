@@ -77,7 +77,7 @@ def get_connected_wifi_bssid(iface=None):
                     interface_section = False
             return bssid
         except Exception as e:
-            print(f"Error: {e}")
+            print('Error: {}'.format(e))
             return None
     elif system == 'linux':
         try:
@@ -90,7 +90,7 @@ def get_connected_wifi_bssid(iface=None):
                     break
             return bssid
         except Exception as e:
-            print(f"Error: {e}")
+            print('Error: {}'.format(e))
             return None
 # Execute netsh command to connect to a Wi-Fi without a password you've already connected to.
 #   [Input] Network ssid or bssid, Network interface to use
@@ -98,7 +98,7 @@ def get_connected_wifi_bssid(iface=None):
 def simple_connect_to_wifi(ssid, iface=None):
     if iface is None:
         iface = iface_managed
-    command = f'netsh wlan connect ssid="{ssid}" name="{ssid}" interface="{iface.name}"'
+    command = 'netsh wlan connect ssid="{}" name="{}" interface="{}"'.format(ssid, ssid, iface.name)
     print()
     subprocess.run(command, shell=True)
 
@@ -142,12 +142,12 @@ def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bo
     set_channel(network.channel, iface)
     thread1 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type1, iface, 100, 0.1))
     thread2 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type2, iface, 100, 0.1))
-    print(f'[monitor] Sending 100 802.11 Deauthentication Frame to AP and client host... ')
+    print('[monitor] Sending 100 802.11 Deauthentication Frame to AP and client host... ')
     thread1.start()
     thread2.start()
     thread1.join()
     thread2.join()
-    print(f'[monitor] Done. ')
+    print('[monitor] Done. ')
 
 def spoof_ARP_table(gateway_IP: str, target_IP: str, iface: None):
     ...
@@ -160,7 +160,7 @@ def set_channel(num: int, iface=None) -> bool:
     if iface is None:
         iface = iface_monitor
     if not iface.ismonitor():
-        print("Cannot change channel. First you need to switch your iface to monitor mode.")
+        print('Cannot change channel. First you need to switch your iface to monitor mode.')
         return False
     else:
         iface.setchannel(num)   # WlanHelper "Wi-Fi 2" channel n
@@ -217,11 +217,11 @@ def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = Fa
     for n in channels:
         # Sequential channel switching - Stays for 1 second on each channel
         current_channel = n
-        print('[monitor] Current channel: %d' % n)
+        print('[monitor] Current channel: {}'.format(n))
         set_channel(n, iface)
         # 비콘 프레임은 보통 100ms마다 송신되기 때문에 timeout=0.1~0.2여도 충분할 것 같다.
         sniff(iface=iface, monitor=True, timeout=0.5, prn=handle_scan_AP, store=0)
-    print("[monitor] Done.")
+    print('[monitor] Done.')
     return network_list
 
 
@@ -237,11 +237,11 @@ def scan_host(network: Network=None, iface_man=None, iface_mon=None) -> list[Hos
         iface = iface_monitor
     print('[monitor] Scan MAC address of host devices... ')
     host_list = _scan_host_MAC(network, iface_mon)
-    print(f'[monitor] Done: {len(host_list)} hosts found.')
+    print('[monitor] Done: {} hosts found.'.format(len(host_list)))
 
     print('[managed] Scan IP address of host devices... ')
     host_list = _scan_host_IP(host_list, network, iface_man)
-    print(f'[managed] Done: {len([host for host in host_list if host.IP != ''])} hosts found.')
+    print('[managed] Done: {} hosts found.'.format(len([host for host in host_list if host.IP != ''])))
 
     return host_list
 
@@ -286,7 +286,7 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
         iface = iface_managed
     ARP_request = (Ether(dst='ff:ff:ff:ff:ff:ff', src=iface.mac, type='ARP')
                    / ARP(hwsrc=iface.mac, psrc=iface.ip, pdst='{}/{}'.format(network.gateway, network.subnet))[0])
-    print(f'[managed] Collect ARP responses for all IP addresses in the internal network range [{network.gateway}/{network.subnet}]... ')
+    print('[managed] Collect ARP responses for all IP addresses in the internal network range [{}/{}]... '.format(network.gateway, network.subnet))
     print(ARP_request.summary())
     with redirect_stdout(io.StringIO()):
         answered_list = srp(ARP_request, iface=iface, timeout=10)[0]
