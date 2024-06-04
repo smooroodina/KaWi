@@ -13,6 +13,7 @@ logging.basicConfig(filename=os.path.join(os.path.dirname(os.path.abspath(__file
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scapy'))
 from scapy.all import *  # noqa: E402
+from scapy.consts import LINUX, WINDOWS
 
 iface_managed = None
 iface_monitor = None
@@ -55,6 +56,12 @@ def lookup_iface() -> list[NetworkInterface]:
     return iface_list
 
 
+def set_two_ifaces_to_use(iface_man: NetworkInterface, iface_mon: NetworkInterface):
+    global iface_managed, iface_monitor
+    iface_managed = iface_man
+    iface_monitor = iface_mon
+
+
 def get_connected_wifi_bssid(iface=None):
     if iface is None:
         iface = iface_managed
@@ -92,17 +99,6 @@ def get_connected_wifi_bssid(iface=None):
         except Exception as e:
             print('Error: {}'.format(e))
             return None
-# Execute netsh command to connect to a Wi-Fi without a password you've already connected to.
-#   [Input] Network ssid or bssid, Network interface to use
-#   [Output] Success or not
-def simple_connect_to_wifi(ssid, iface=None):
-    if iface is None:
-        iface = iface_managed
-    command = 'netsh wlan connect ssid="{}" name="{}" interface="{}"'.format(ssid, ssid, iface.name)
-    print()
-    subprocess.run(command, shell=True)
-
-    return True     # But this is a connection request success and does not guarantee the establishment of a connection.
 
 # Send de-authentication frame to force disconnect a specific client or all clients connected to the target network
 #   [Input] Network, Target Client MAC address, Broadcast or not, Network interface to use
@@ -153,19 +149,54 @@ def spoof_ARP_table(gateway_IP: str, target_IP: str, iface: None):
     ...
 
 
+# Determines the current mode of a network interface.
+#   [Input] Target interface
+#   [Output] Current mode(managed or monitor mode)
+def get_mode(iface=None) -> str:
+    if LINUX:
+        command = f'iw dev {iface} info | grep type | awk "{{print $2}}"'
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        return result.stdout.lower()
+    else:   # WINDOWS
+        if iface.ismonitor():
+            return 'monitor'
+        else:
+            return 'managed'
+
+
+#
+#   [Input] mode('managed' or 'monitor'), Target interface
+#   [Output] None
+def set_mode(mode: str, iface=None) -> None:
+    if get_mode(iface) != mode:
+        if LINUX:
+            result = subprocess.run(['ip', 'link', 'set', iface.name, 'down'], capture_output=True, text=True)
+            result.check_returncode()
+            result = subprocess.run(['iw', 'dev', iface.name, 'set', 'type', mode], capture_output=True, text=True)
+            result.check_returncode()
+            result = subprocess.run(['ip', 'link', 'set', iface.name, 'up'], capture_output=True, text=True)
+            result.check_returncode()
+        else:   # WINDOWS
+            iface.setmonitor(True if mode == 'monitor' else False)
+
+
 # Change the channel of the target network interface. (Only works in monitor mode.)
 #   [Input] Channel number, Target interface
 #   [Output] Success or failure
-def set_channel(num: int, iface=None) -> bool:
+def set_channel(channel: int, iface=None) -> bool:
     if iface is None:
         iface = iface_monitor
-    if not iface.ismonitor():
+    if get_mode(iface) != 'monitor':
         print('Cannot change channel. First you need to switch your iface to monitor mode.')
         return False
+    if LINUX:
+        result = subprocess.run(['iw', 'dev', iface.name, 'set', 'channel', channel], capture_output=True, text=True)
+        result.check_returncode()
     else:
-        iface.setchannel(num)   # WlanHelper "Wi-Fi 2" channel n
-        # It actually works, but I can't check the changed channel number via command(WlanHelper "Wi-Fi 2" channel)
-        return True  # But it's still possible that it failed... (responsibility of scapy)
+        iface.setchannel(channel)   # WlanHelper "Wi-Fi 2" channel n
+        # It actually works. But, in Windows 11, I couldn't check the changed channel number via command(WlanHelper "Wi-Fi 2" channel)
+        # If that doesn't work, try switching to managed mode and then back to monitor mode.
+        return True  # But it's still possible that it failed... (Because scapy cannot check the subprocess result output)
 
 
 # Scan access points while switching channels in the 2.4GHz and 5GHz bands.
@@ -303,14 +334,27 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
     return host_list
 
 
+def linux_init_iface_mon(iface=None):
+    iface_mon_name = ('mon'+iface.name)[:15]
+    result = subprocess.run(['iw', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
+                         capture_output=True, text=True)
+    result.check_returncode()
+    result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
+    result.check_returncode()
+    return iface_mon_name
+
+
 if __name__ == '__main__':
+    if LINUX:
+        linux_init_iface_mon()
+
     iface_list = lookup_iface()
     # Uses two interfaces: one connects to the target WiFi(Managed mode), the other monitors 802.11 frames(Monitor mode)
     iface_managed = next((i for i in iface_list if i.name == 'Wi-Fi'), None)
-    iface_managed.setmonitor(False)
+    set_mode('managed', iface_managed)
     iface_monitor = next((i for i in iface_list if i.name == 'Wi-Fi 2'), None)
-    iface_monitor.setmonitor(True)
-    '''
+    set_mode('monitor', iface_monitor)
+
     network_list = scan_AP(frequency='2.4ghz', iface=iface_monitor)
     network = next((network for network in network_list if network.bssid == get_connected_wifi_bssid(iface=iface_managed)), None)
     # todo: need to find a way to automatically determine gateways and subnets.
@@ -318,10 +362,10 @@ if __name__ == '__main__':
         network.gateway = '192.168.0.1'
     if network.subnet is None:
         network.subnet = 24
-    '''
+
     network = Network('monodoo2.4', '--:--:--:--:--:--', 3, {'WPA2/PSK'}, '192.168.0.1', 24)
     set_channel(network.channel)
-
+    '''
     from scapy.modules.krack import KrackAP
     #load_module("krack")
     KrackAP(
@@ -331,7 +375,7 @@ if __name__ == '__main__':
         passphrase="testtest",  # Associated passphrase
         channel=3
     ).run()
-
+    '''
     host_list = scan_host(network=network)
     client_mac = [host.MAC for host in host_list if host.IP == '192.168.0.13'][0]
     disconnect_client(network=network, client_MAC=client_mac)

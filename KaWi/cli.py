@@ -4,6 +4,8 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scapy'))
 from scapy.all import *  # noqa: E402
+from scapy.consts import LINUX, WINDOWS
+
 import sniff
 
 
@@ -16,10 +18,15 @@ def initial_setup():
         iface = iface_list[idx]
         print(f'[{idx}] name:\'{iface.name}\'   description:\'{iface.description}\' MAC:{iface.mac}')
 
-    input1 = input("[managed]: ")
-    input2 = input("[monitor]: ")
-    sniff.iface_managed = input1 if not input1.isdecimal() else iface_list[int(input1)]
-    sniff.iface_monitor = input2 if not input2.isdecimal() else iface_list[int(input2)]
+    input1, input2 = '', ''
+    if LINUX:
+        input1 = input('[iface]: ')
+        input2 = sniff.linux_init_iface_mon(input1 if not input1.isdecimal() else iface_list[int(input1)])
+    else:
+        input1 = input("[managed]: ")
+        input2 = input("[monitor]: ")
+    sniff.set_two_ifaces_to_use(input1 if not input1.isdecimal() else iface_list[int(input1)],
+                                input2 if not input2.isdecimal() else iface_list[int(input2)])
     print("*Setup was successful.")
 
 
