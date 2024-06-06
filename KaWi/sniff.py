@@ -354,14 +354,16 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
 def linux_create_iface_mon(iface=None):
     if iface is None:
         iface = iface_managed
-    set_mode('monitor', iface_managed)  # To prevent channel=-1 phenomenon in monitor mode interface
+    set_mode('monitor', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
     iface_mon_name = ('mon'+iface.name)[:15]
-    result = subprocess.run(['iw', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
+    subprocess.run(['iw', 'dev', iface_mon_name, 'del'],
+                         capture_output=True, text=True)
+    result = subprocess.run(['iw', 'dev', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
                          capture_output=True, text=True)
     result.check_returncode()
     result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
     result.check_returncode()
-    set_mode('managed', iface_managed)  # To prevent channel=-1 phenomenon in monitor mode interface
+    set_mode('managed', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
     return iface_mon_name
 
 
