@@ -15,6 +15,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '
 from scapy.all import *  # noqa: E402
 from scapy.consts import LINUX, WINDOWS
 
+iface_list = []
 iface_managed = None
 iface_monitor = None
 network_list = []
@@ -49,6 +50,7 @@ class Host:
 #   [Input] None
 #   [Output] List of available network interface [Name, Description, MAC, IPv4]
 def lookup_iface() -> list[NetworkInterface]:
+    global iface_list
     iface_list = []
     for guid, iface in conf.ifaces.data.items():
         if iface.mac != '':  # Windows에서 WAN Miniport 제외
@@ -351,7 +353,7 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
     return host_list
 
 
-def linux_create_iface_mon(iface=None):
+def linux_create_iface_mon(iface=None) -> NetworkInterface:
     if iface is None:
         iface = iface_managed
     set_mode('monitor', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
@@ -364,7 +366,7 @@ def linux_create_iface_mon(iface=None):
     result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
     result.check_returncode()
     set_mode('managed', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
-    return iface_mon_name
+    return next((iface for iface in iface_list if iface.name == iface_mon_name), None)
 
 
 if __name__ == '__main__':

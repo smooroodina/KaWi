@@ -12,22 +12,22 @@ import sniff
 def initial_setup():
     print("*First, specify the two network interface to use: [managed], [monitor].")
     print("*Your network interfaces:")
-    iface_list = sniff.lookup_iface()
+    sniff.iface_list = sniff.lookup_iface()
 
-    for idx in range(len(iface_list)):
-        iface = iface_list[idx]
+    for idx in range(len(sniff.iface_list)):
+        iface = sniff.iface_list[idx]
         print(f'[{idx}] name:\'{iface.name}\'   description:\'{iface.description}\' MAC:{iface.mac}')
 
     input1, input2 = '', ''
     if LINUX:
         input1 = input('[managed & monitor]: ')
-        input2 = sniff.linux_create_iface_mon(iface_list[int(input1)])
+        input2 = sniff.linux_create_iface_mon(sniff.iface_list[int(input1)])
     else:
         input1 = input("[managed]: ")
         input2 = input("[monitor]: ")
 
-    sniff.set_two_ifaces_to_use(iface_list[int(input1)],
-                                iface_list[int(input2)])
+    sniff.set_two_ifaces_to_use(sniff.iface_list[int(input1)],
+                                sniff.iface_list[int(input2)])
     print("*Setup was successful.")
 
 
