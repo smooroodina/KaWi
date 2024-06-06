@@ -20,13 +20,14 @@ def initial_setup():
 
     input1, input2 = '', ''
     if LINUX:
-        input1 = input('[iface]: ')
-        input2 = sniff.linux_init_iface_mon(input1 if not input1.isdecimal() else iface_list[int(input1)])
+        input1 = input('[managed & monitor]: ')
+        input2 = sniff.linux_create_iface_mon(iface_list[int(input1)])
     else:
         input1 = input("[managed]: ")
         input2 = input("[monitor]: ")
-    sniff.set_two_ifaces_to_use(input1 if not input1.isdecimal() else iface_list[int(input1)],
-                                input2 if not input2.isdecimal() else iface_list[int(input2)])
+
+    sniff.set_two_ifaces_to_use(iface_list[int(input1)],
+                                iface_list[int(input2)])
     print("*Setup was successful.")
 
 
@@ -86,13 +87,16 @@ def print_welcome_message():
 
 
 if __name__ == '__main__':
-    try:
-        initial_setup()
-        print_welcome_message()
-        show_commands()
-        while True:
+
+    initial_setup()
+    print_welcome_message()
+    show_commands()
+    while True:
+        try:
             command = input(">> ")
+            if command == "exit":
+                break
             if len(command) > 0:
                 handle_command(command)
-    except KeyboardInterrupt:
-        sys.exit(0)
+        except KeyboardInterrupt:
+            continue

