@@ -175,9 +175,9 @@ def spoof_ARP_table(gateway_IP: str, target_IP: str, iface: None):
 #   [Output] Current mode(managed or monitor mode)
 def get_mode(iface=None) -> str:
     if LINUX:
-        command = f'iw dev {iface} info | grep type | awk "{{print $2}}"'
+        command = f'iw dev {iface} info | grep type | awk \'{{print $2}}\''
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        return result.stdout.lower()
+        return result.stdout.strip().lower()
     else:   # WINDOWS
         if iface.ismonitor():
             return 'monitor'
@@ -211,7 +211,7 @@ def set_channel(channel: int, iface=None) -> bool:
         print('Cannot change channel. First you need to switch your iface to monitor mode.')
         return False
     if LINUX:
-        result = subprocess.run(['iw', 'dev', iface.name, 'set', 'channel', channel], capture_output=True, text=True)
+        result = subprocess.run(['iw', 'dev', iface.name, 'set', 'channel', str(channel)], capture_output=True, text=True)
         result.check_returncode()
     else:
         iface.setchannel(channel)   # WlanHelper "Wi-Fi 2" channel n
