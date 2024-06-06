@@ -21,7 +21,7 @@ def initial_setup():
     input1, input2 = '', ''
     if LINUX:
         input1 = input('[managed & monitor]: ')
-        input2 = sniff.linux_create_iface_mon(sniff.iface_list[int(input1)])
+        input2 = None
     else:
         input1 = input("[managed]: ")
         input2 = input("[monitor]: ")
