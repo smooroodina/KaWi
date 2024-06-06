@@ -26,8 +26,7 @@ def initial_setup():
         input1 = input("[managed]: ")
         input2 = input("[monitor]: ")
 
-    sniff.set_two_ifaces_to_use(sniff.iface_list[int(input1)],
-                                sniff.iface_list[int(input2)])
+    sniff.set_two_ifaces_to_use(int(input1), int(input2))
     print("*Setup was successful.")
 
 

@@ -58,10 +58,10 @@ def lookup_iface() -> list[NetworkInterface]:
     return iface_list
 
 
-def set_two_ifaces_to_use(iface_man: NetworkInterface, iface_mon: NetworkInterface):
-    global iface_managed, iface_monitor
-    iface_managed = iface_man
-    iface_monitor = iface_mon
+def set_two_ifaces_to_use(iface_man, iface_mon):
+    global iface_managed, iface_monitor, iface_list
+    iface_managed = iface_man if isinstance(iface_man, NetworkInterface) else iface_list[iface_man]
+    iface_monitor = iface_mon if isinstance(iface_mon, NetworkInterface) else iface_list[iface_mon]
     set_mode('managed', iface_managed)
     set_mode('monitor', iface_monitor)
 
