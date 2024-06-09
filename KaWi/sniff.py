@@ -201,7 +201,7 @@ def get_mode(iface=None) -> str:
     if LINUX:
         command = f'iw dev {iface} info | grep type | awk "{{print $2}}"'
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        return result.stdout.lower()
+        return result.stdout.strip().lower()
     elif WINDOWS:
         try:
             if iface.ismonitor():
