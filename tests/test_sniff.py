@@ -44,6 +44,22 @@ def setup_ifaces(setup_inputs):
             break
     return iface_managed, iface_monitor, iface_other
 
+@pytest.fixture
+def setup_networks(setup_ifaces):
+    iface_managed, iface_monitor, _ = setup_ifaces
+    network_list = scan_AP(iface=iface_monitor)
+    network_connected = next((n for n in network_list if n.bssid == get_connected_wifi_bssid(iface_managed)), None)
+    for network in network_list:
+        network_other = network
+        if network != connected_network:
+            break
+
+        # Should be removed
+        network_connected.gateway = '192.168.0.1'
+        network_connected.subnet = 24
+
+    return network_connected, network_other
+
 
 def test_lookup_iface():
     iface_list = lookup_iface()
@@ -102,3 +118,41 @@ def test_set_mode(setup_ifaces):
     assert set_monitor, '인터페이스의 모드를 monitor로 변환 중 오류가 발생했습니다.'
     assert get_mode(iface_monitor) == 'monitor', '인터페이스의 모드가 monitor로 변경되지 않았습니다.'
 
+# def test_get_channel(setup_ifaces):
+
+# def test_set_channel(setup_ifaces):
+
+def test_scan_AP(setup_ifaces):
+    _, iface_monitor, _ = setup_ifaces
+    network_list_specified_channels = scan_AP(channels=[1, 2, 3, 4, 5, 6], iface=iface_monitor)
+    assert len(network_list_specified_channels) > 0, '선택된 채널에서 네트워크 탐색에 실패했습니다.'
+    network_list_2_4_frequency = scan_AP(frequency='2.4ghz', iface=iface_monitor)
+    assert len(network_list_2_4_frequency) > 0, '2.4ghz 대역에서 네트워크 탐색에 실패했습니다.'
+    network_list_5_frequency = scan_AP(frequency='5ghz', iface=iface_monitor)
+    assert len(network_list_5_frequency) > 0, '5ghz 대역에서 네트워크 탐색에 실패했습니다.'
+
+
+def test_scan_host(setup_ifaces, setup_networks):
+    iface_managed, iface_monitor, _ = setup_ifaces
+    network_connected, network_other = setup_networks
+    host_list_in_connected_network = scan_host(network=None, iface_man=iface_managed, iface_mon=iface_monitor)
+    assert len(host_list_in_connected_network) > 0, '현재 연결된 네트워크에서 Host 정보 목록을 수집하지 못했습니다.'
+    # host_list_in_specified_network = scan_host(network=???, iface_man=iface_managed, iface_mon=iface_monitor)
+    # assert len(host_list_in_specified_network) > 0, '특정 네트워크에 연결해서 Host 목록을 수집하지 못했습니다.'
+    host_list_in_wrong_network = scan_host(network=network_other, iface_man=iface_managed, iface_mon=iface_monitor)
+    assert host_list_in_wrong_network is None, '연결 불가능한 네트워크를 지정한 경우 None을 반환해야 합니다.'
+
+def test_disconnect_client(setup_ifaces, setup_networks):
+    _, iface_monitor, _ = setup_ifaces
+    network_connected, network_wrong = setup_networks
+    # client_MAC should be modified to a different target device MAC address for each testing environment.
+    disconnect_specified_client = disconnect_client(network=network_connected, client_MAC='04:29:2e:79:4a:12', iface=iface_monitor)
+    assert disconnect_specified_client, '지정된 client의 네트워크 연결이 해제되었는지 확인할 수 없습니다.'
+    disconnect_broadcast = disconnect_client(network=network_connected, broadcast=True, iface=iface_monitor)
+    assert disconnect_broadcast, '모든 client의 네트워크 연결이 해제되었는지 확인할 수 없습니다.'
+    disconnect_wrong_client = disconnect_client(network=network_connected, client_MAC='00:00:00:00:00:00', iface=iface_monitor)
+    assert not disconnect_wrong_client, '존재하지 않는 client를 대상으로 공격을 수행해서는 안 됩니다.'
+    disconnect_wrong_network = disconnect_client(network=network_wrong, client_MAC='04:29:2e:79:4a:12', iface=iface_monitor)
+    assert not disconnect_wrong_network, '존재하지 않는 network에 대해 공격을 수행해서는 안 됩니다.'
+
+    
