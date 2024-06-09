@@ -1,0 +1,12 @@
+[run]
+omit =
+    test_*.py
+    __init__.py
+
+[report]
+# coverage report --omit=../scapy/*  -m
+exclude_lines =
+    def __init__
+    def __str__
+    if __name__ == .__main__.:
+    if LINUX:

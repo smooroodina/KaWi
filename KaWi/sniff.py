@@ -15,7 +15,6 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '
 from scapy.all import *  # noqa: E402
 from scapy.consts import LINUX, WINDOWS
 
-iface_list = []
 iface_managed = None
 iface_monitor = None
 network_list = []
@@ -58,21 +57,59 @@ def lookup_iface() -> list[NetworkInterface]:
     return iface_list
 
 
-def set_two_ifaces_to_use(iface_man, iface_mon):
-    global iface_managed, iface_monitor, iface_list
-    iface_managed = iface_man if isinstance(iface_man, NetworkInterface) else iface_list[int(iface_man)]
+def from_name_to_iface(iface_name: str, iface_list: list[NetworkInterface]):
+    return next((iface for iface in iface_list if iface.name == iface_name), None)
+
+
+def linux_create_iface_mon(iface=None) -> NetworkInterface:
+    if iface is None:
+        iface = iface_managed
+    set_mode('monitor', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
+    iface_mon_name = ('mon'+iface.name)[:15]
+    subprocess.run(['iw', 'dev', iface_mon_name, 'del'],
+                         capture_output=True, text=True)
+    result = subprocess.run(['iw', 'dev', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
+                         capture_output=True, text=True)
+    result.check_returncode()
+    result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
+    result.check_returncode()
+    set_mode('managed', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
+    return next((iface for iface in iface_list if iface.name == iface_mon_name), None)
+
+
+def set_two_ifaces_to_use(iface_man: NetworkInterface, iface_mon: NetworkInterface, iface_list: [NetworkInterface]) -> bool:
+    global iface_managed, iface_monitor
+    iface_managed = iface_man if isinstance(iface_man, NetworkInterface) else\
+        iface_list[int(iface_man)] if iface_man.isdecimal() else from_name_to_iface(iface_man, iface_list)
     if iface_mon is None:
         iface_mon = linux_create_iface_mon(iface_managed)
-    iface_monitor = iface_mon if isinstance(iface_mon, NetworkInterface) else iface_list[int(iface_mon)]
+    iface_monitor = iface_mon if isinstance(iface_mon, NetworkInterface) else\
+        iface_list[int(iface_mon)] if iface_mon.isdecimal() else from_name_to_iface(iface_mon, iface_list)
+    if iface_managed is None or iface_monitor is None:
+        return False
     set_mode('managed', iface_managed)
     set_mode('monitor', iface_monitor)
+    return True     # Should we check whether their mode has surely changed?
+
 
 
 def get_connected_wifi_bssid(iface=None):
     if iface is None:
         iface = iface_managed
-    system = sys.platform
-    if system == 'win32':
+    if LINUX:
+        try:
+            result = subprocess.run(['iwconfig', iface.name], capture_output=True, text=True)
+            output = result.stdout
+            bssid = None
+            for line in output.split('\n'):
+                if 'Access Point' in line:
+                    bssid = line.split(' ')[-1].strip()
+                    break
+            return bssid
+        except Exception as e:
+            print('Error: {}'.format(e))
+            return None
+    elif WINDOWS:
         try:
             result = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], capture_output=True, text=True)
             output = result.stdout
@@ -88,19 +125,6 @@ def get_connected_wifi_bssid(iface=None):
                     break
                 elif line.strip() == '':
                     interface_section = False
-            return bssid
-        except Exception as e:
-            print('Error: {}'.format(e))
-            return None
-    elif system == 'linux':
-        try:
-            result = subprocess.run(['iwconfig', iface.name], capture_output=True, text=True)
-            output = result.stdout
-            bssid = None
-            for line in output.split('\n'):
-                if 'Access Point' in line:
-                    bssid = line.split(' ')[-1].strip()
-                    break
             return bssid
         except Exception as e:
             print('Error: {}'.format(e))
@@ -178,18 +202,22 @@ def get_mode(iface=None) -> str:
         command = f'iw dev {iface} info | grep type | awk "{{print $2}}"'
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
         return result.stdout.lower()
-    else:   # WINDOWS
-        if iface.ismonitor():
-            return 'monitor'
-        else:
-            return 'managed'
+    elif WINDOWS:
+        try:
+            if iface.ismonitor():
+                return 'monitor'
+            else:
+                return 'managed'
+        except OSError as e:
+            return None
 
 
 #
 #   [Input] mode('managed' or 'monitor'), Target interface
 #   [Output] None
-def set_mode(mode: str, iface=None) -> None:
-    if get_mode(iface) != mode:
+def set_mode(mode: str, iface=None) -> bool:
+    current_mode = get_mode(iface)
+    if current_mode is not None and current_mode != mode:
         if LINUX:
             result = subprocess.run(['ip', 'link', 'set', iface.name, 'down'], capture_output=True, text=True)
             result.check_returncode()
@@ -197,9 +225,11 @@ def set_mode(mode: str, iface=None) -> None:
             result.check_returncode()
             result = subprocess.run(['ip', 'link', 'set', iface.name, 'up'], capture_output=True, text=True)
             result.check_returncode()
-        else:   # WINDOWS
-            iface.setmonitor(True if mode == 'monitor' else False)
-
+            return True
+        elif WINDOWS:
+            return iface.setmonitor(True if mode == 'monitor' else False)
+    else:
+        return False
 
 # Change the channel of the target network interface. (Only works in monitor mode.)
 #   [Input] Channel number, Target interface
@@ -213,7 +243,7 @@ def set_channel(channel: int, iface=None) -> bool:
     if LINUX:
         result = subprocess.run(['iw', 'dev', iface.name, 'set', 'channel', channel], capture_output=True, text=True)
         result.check_returncode()
-    else:
+    elif WINDOWS:
         iface.setchannel(channel)   # WlanHelper "Wi-Fi 2" channel n
         # It actually works. But, in Windows 11, I couldn't check the changed channel number via command(WlanHelper "Wi-Fi 2" channel)
         # If that doesn't work, try switching to managed mode and then back to monitor mode.
@@ -354,21 +384,6 @@ def _find_MAC_from_IP(host_list: list[Host], network: Network, iface=None):
         print('MAC:{} - IP:{}'.format(received.hwsrc, received.psrc))
     return host_list
 
-
-def linux_create_iface_mon(iface=None) -> NetworkInterface:
-    if iface is None:
-        iface = iface_managed
-    set_mode('monitor', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
-    iface_mon_name = ('mon'+iface.name)[:15]
-    subprocess.run(['iw', 'dev', iface_mon_name, 'del'],
-                         capture_output=True, text=True)
-    result = subprocess.run(['iw', 'dev', iface.name, 'interface', 'add', iface_mon_name, 'type', 'monitor'],
-                         capture_output=True, text=True)
-    result.check_returncode()
-    result = subprocess.run(['ip', 'link', 'set', iface_mon_name, 'up'], capture_output=True, text=True)
-    result.check_returncode()
-    set_mode('managed', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
-    return next((iface for iface in iface_list if iface.name == iface_mon_name), None)
 
 
 if __name__ == '__main__':

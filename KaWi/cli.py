@@ -10,23 +10,32 @@ import sniff
 
 
 def initial_setup():
-    print("*First, specify the two network interface to use: [managed], [monitor].")
-    print("*Your network interfaces:")
-    sniff.iface_list = sniff.lookup_iface()
+    def input_check_iface_num(prompt: str):
+        while True:
+            try:
+                user_input = int(input(prompt))
+                if user_input in range(1, len(sniff.iface_list)):
+                    return user_input
+                print('(E) Invalid interface number.')
+            except ValueError:
+                print('(E) Invalid interface number.')
+
+    print('*First, specify the two network interface to use: [managed], [monitor].')
+    print('*Your network interfaces:')
+    iface_list = sniff.lookup_iface()
 
     for idx in range(len(sniff.iface_list)):
         iface = sniff.iface_list[idx]
         print(f'[{idx}] name:\'{iface.name}\'   description:\'{iface.description}\' MAC:{iface.mac}')
 
-    input1, input2 = '', ''
     if LINUX:
-        input1 = input('[managed & monitor]: ')
-        input2 = None
+        user_input1 = input_check_iface_num('[managed & monitor]: ')
+        user_input2 = None
     else:
-        input1 = input("[managed]: ")
-        input2 = input("[monitor]: ")
+        user_input1 = input_check_iface_num("[managed]: ")
+        user_input2 = input_check_iface_num("[monitor]: ")
 
-    sniff.set_two_ifaces_to_use(input1, input2)
+    sniff.set_two_ifaces_to_use(user_input1, user_input2, iface_list)
     print("*Setup was successful.")
 
 
@@ -92,10 +101,10 @@ if __name__ == '__main__':
     show_commands()
     while True:
         try:
-            command = input(">> ")
-            if command == "exit":
+            user_input = input(">> ")
+            if user_input == "exit":
                 break
-            if len(command) > 0:
-                handle_command(command)
+            if len(user_input) > 0:
+                handle_command(user_input)
         except KeyboardInterrupt:
             continue
