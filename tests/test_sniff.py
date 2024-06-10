@@ -124,7 +124,7 @@ def test_set_mode(setup_ifaces):
 
 def test_scan_AP(setup_ifaces):
     _, iface_monitor, _ = setup_ifaces
-    network_list_specified_channels = scan_AP(channels=[1, 2, 3, 4, 5, 6], iface=iface_monitor)
+    network_list_specified_channels = scan_AP(channels=[2, 5, 8, 11], iface=iface_monitor)
     assert len(network_list_specified_channels) > 0, '선택된 채널에서 네트워크 탐색에 실패했습니다.'
     network_list_2_4_frequency = scan_AP(frequency='2.4ghz', iface=iface_monitor)
     assert len(network_list_2_4_frequency) > 0, '2.4ghz 대역에서 네트워크 탐색에 실패했습니다.'
