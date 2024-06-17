@@ -69,11 +69,19 @@ def handle_command(command):
     elif command_num == 2:
         sniff.host_list = sniff.scan_host()
     elif command_num == 10:
+        bssid, channel = None, None
+
         if len(commands) < 2:
             print('*Requires option: target IP or MAC address')
             return
-        client_mac = [host.MAC for host in sniff.host_list if host.IP == commands[1] or host.MAC == commands[1]][0]
-        sniff.disconnect_client(client_MAC=client_mac)
+        try:
+            client_mac = [host.MAC for host in sniff.host_list if host.IP == commands[1] or host.MAC == commands[1]][0]
+        except IndexError as e:
+            client_mac = commands[1]
+        if len(commands) == 4:
+            bssid = commands[2]
+            channel = int(commands[3])
+        sniff.disconnect_client(client_MAC=client_mac, bssid=bssid, channel=channel)
     else:
         print("*Invalid command.\n")
         show_commands()
