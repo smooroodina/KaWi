@@ -76,7 +76,7 @@ def handle_command(command):
             return
         try:
             client_mac = [host.MAC for host in sniff.host_list if host.IP == commands[1] or host.MAC == commands[1]][0]
-        except IndexError as e:
+        except (TypeError, IndexError) as e:
             client_mac = commands[1]
         if len(commands) == 4:
             bssid = commands[2]
